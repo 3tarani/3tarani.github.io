@@ -366,10 +366,21 @@ function call(fn) {
       r[fn].apply(r, args);
     });
   }
-  var ctl = window.AbortController ? new AbortController() : null, tm = ctl ? setTimeout(function () { ctl.abort(); }, 55000) : 0;
-  return fetch(window.AFK_EXEC, { method: 'POST', redirect: 'follow', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify({ fn: fn, args: args }), signal: ctl ? ctl.signal : undefined })
-    .then(function (r) { clearTimeout(tm); if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
-    .catch(function (e) { clearTimeout(tm); if (e && e.name === 'SyntaxError') throw new Error('Failed to fetch: сервер повернув не те, що очікувалось'); if (e && (e.name === 'TypeError' || e.name === 'AbortError')) throw new Error('Failed to fetch: ' + (e.message || e.name)); throw e; })
+  /* Прямий режим. Читання (apiGetAll) безпечно повторювати: до 3 спроб по 20 с. Запис — одна спроба 45 с, далі повтор робить черга. */
+  var tries = fn === 'apiGetAll' ? 3 : 1, limit = fn === 'apiGetAll' ? 20000 : 45000;
+  function once() {
+    var ctl = window.AbortController ? new AbortController() : null, tm = ctl ? setTimeout(function () { ctl.abort(); }, limit) : 0;
+    return fetch(window.AFK_EXEC, { method: 'POST', redirect: 'follow', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify({ fn: fn, args: args }), signal: ctl ? ctl.signal : undefined })
+      .then(function (r) { clearTimeout(tm); if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+      .catch(function (e) { clearTimeout(tm); if (e && e.name === 'SyntaxError') throw new Error('Failed to fetch: сервер повернув не те, що очікувалось'); if (e && (e.name === 'TypeError' || e.name === 'AbortError')) throw new Error('Failed to fetch: ' + (e.message || e.name)); throw e; });
+  }
+  function attempt(n) {
+    return once().catch(function (e) {
+      if (n < tries && isNetErr(e)) return new Promise(function (r) { setTimeout(r, n * 1200); }).then(function () { return attempt(n + 1); });
+      throw e;
+    });
+  }
+  return attempt(1)
     .then(function (j) { if (!j || !j.ok) throw new Error((j && j.error) || 'Помилка сервера'); return j.data; });
 }
 function ink(hex) {
@@ -2893,7 +2904,12 @@ function sendReady() {                                   // повідомляє
   try { window.top.postMessage({ afk: 'ready' }, '*'); } catch (e) { }
   hideBootSplash();
 }
-function hideBootSplash() { var b = document.getElementById('bootsplash'); if (!b) return; b.classList.add('off'); setTimeout(function () { if (b.parentNode) b.parentNode.removeChild(b); }, 300); }
+var splashT0 = Date.now(), splashHiding = false;
+function hideBootSplash() {                              // заставка тримається щонайменше 1,3 с, навіть якщо дані вже є в памʼяті телефона
+  var b = document.getElementById('bootsplash'); if (!b || splashHiding) return;
+  var wait = 1300 - (Date.now() - splashT0); if (wait > 0) { setTimeout(hideBootSplash, wait); return; }
+  splashHiding = true; b.classList.add('off'); setTimeout(function () { if (b.parentNode) b.parentNode.removeChild(b); }, 300);
+}
 setTimeout(hideBootSplash, 8000);
 var bootFails = 0;
 function boot() {
@@ -2903,7 +2919,7 @@ function boot() {
     .catch(function (e) {
       sendReady();
       if (cached) {                                        // немає звʼязку: працюємо з останніми збереженими даними
-        DB.stale = false; document.body.classList.remove('stale'); render(); toast('Немає звʼязку — показано останні збережені дані', 5000); restoreQ(); return;
+        DB.stale = false; document.body.classList.remove('stale'); render(); toast('Немає звʼязку — показано останні збережені дані [' + String((e && e.message) || e).replace(/^Error:\s*/, '').replace(/\s+/g, ' ').slice(0, 60) + ']', 6000); restoreQ(); return;
       }
       bootFails++;
       if (isNetErr(e) && bootFails <= 2) {                 // разовий збій мережі на старті: не лякаємо помилкою, а мовчки повторюємо
