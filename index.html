@@ -316,7 +316,7 @@ function applyFs() { document.documentElement.style.setProperty('--fs', getFs())
 applyFs();
 try { TOKEN = localStorage.getItem('afk_token') || ''; } catch (e) { TOKEN = ''; }
 var RND_MAX_RUNS = 5;                                  // має збігатися з RND_MAX_RUNS_ у Code.gs
-var APP_VER = 'v0.43';
+var APP_VER = 'v0.44';
 var DEVICE = '', ACTOR = '';
 try {
   DEVICE = localStorage.getItem('afk_dev') || '';
@@ -1511,7 +1511,7 @@ function computeInsights(order, gset, mp, P, games, dayTeams) {
   var tri = {}, quad = {};
   var combo = function (arr, k, cb) { (function rec(start, cur) { if (cur.length === k) { cb(cur); return; } for (var i = start; i < arr.length; i++) { cur.push(arr[i]); rec(i + 1, cur); cur.pop(); } })(0, []); };
   var I = { cap: {}, capDuel: {}, tri: tri, quad: quad, first: {}, winG: {}, comeback: {}, pm: {}, duel: {}, hat: {}, poker: {}, multi: {}, t2t: {}, dayChamp: {}, wd: {}, att: [], rec: {}, days: games.length };
-  var gl = {}, pmGoals = {}, dayGoals = {}, byGame = {};
+  var gl = {}, dayGoals = {}, byGame = {};
   DB.Goals.forEach(function (g) { if (gset[g.gameId]) (gl[g.matchId] = gl[g.matchId] || []).push(g); });
   Object.keys(gl).forEach(function (k) { gl[k].sort(function (a, b) { return a.ts - b.ts; }); });
   var addDuel = function (a, b, o) { var k = a + '|' + b, q = I.duel[k] || (I.duel[k] = { a: a, b: b, m: 0, w: 0, d: 0, l: 0 }); q.m++; q[o]++; };
@@ -1529,8 +1529,8 @@ function computeInsights(order, gset, mp, P, games, dayTeams) {
     }
     goals.forEach(function (x) {
       if (x.ownGoal || !x.playerId) return;
-      var k = m.id + '|' + x.playerId, d = m.gameId + '|' + x.playerId;
-      pmGoals[k] = (pmGoals[k] || 0) + 1; dayGoals[d] = (dayGoals[d] || 0) + 1;
+      var d = m.gameId + '|' + x.playerId;
+      dayGoals[d] = (dayGoals[d] || 0) + 1;
     });
     [[m.teamAId, s.a - s.b], [m.teamBId, s.b - s.a]].forEach(function (t) {
       ((mp[m.id] || {})[t[0]] || []).forEach(function (pid) { var q = I.pm[pid] || (I.pm[pid] = { d: 0, m: 0 }); q.d += t[1]; q.m++; });
@@ -1547,14 +1547,14 @@ function computeInsights(order, gset, mp, P, games, dayTeams) {
     var q = I.t2t[tk] || (I.t2t[tk] = { a: ka, b: kb, m: 0, w: 0, d: 0, l: 0, gf: 0, ga: 0 });
     q.m++; q[asc ? oa : ob]++; q.gf += asc ? s.a : s.b; q.ga += asc ? s.b : s.a;
   });
-  Object.keys(pmGoals).forEach(function (k) {
-    var n = pmGoals[k], parts = k.split('|');
+  /* v0.44: хет-трики та більше — за ігровий день (усі матчі дня разом) */
+  Object.keys(dayGoals).forEach(function (k) {
+    var n = dayGoals[k], parts = k.split('|');
     if (n >= 3) I.hat[parts[1]] = (I.hat[parts[1]] || 0) + 1;
     if (n >= 4) I.poker[parts[1]] = (I.poker[parts[1]] || 0) + 1;
     if (n >= 3) { var bk = Math.min(n, 10), mb = I.multi[bk] || (I.multi[bk] = {}); mb[parts[1]] = (mb[parts[1]] || 0) + 1; }      // рівно n голів (10 — це 10 і більше)
-    if (!I.rec.pMatch || n > I.rec.pMatch.n) I.rec.pMatch = { n: n, pid: parts[1], mid: parts[0] };
+    if (!I.rec.pDay || n > I.rec.pDay.n) I.rec.pDay = { n: n, pid: parts[1], gid: parts[0] };
   });
-  Object.keys(dayGoals).forEach(function (k) { var n = dayGoals[k], parts = k.split('|'); if (!I.rec.pDay || n > I.rec.pDay.n) I.rec.pDay = { n: n, pid: parts[1], gid: parts[0] }; });
   games.forEach(function (g) {
     var ms = byGame[g.id] || [], w = dayWinner(g), set = {};
     if (!I.rec.mostM || ms.length > I.rec.mostM.n) I.rec.mostM = { n: ms.length, g: g };
@@ -1585,6 +1585,7 @@ function computeTime(order, gl, games, byGame) {
     var ms = byGame[g.id] || [], goals = 0; ms.forEach(function (m) { goals += (gl[m.id] || []).length; });
     T.games.push({ g: g, st: st, en: en, d: d, m: ms.length, goals: goals });
   });
+  var byPD = {};
   var better = function (cur, v, lowIsBetter) { return !cur || (lowIsBetter ? v < cur.v : v > cur.v); };
   order.forEach(function (m) {
     var gm = byId('Games', m.gameId); if (gm && gm.retro) return;                 // ретро-ігри не мають справжнього часу
@@ -1604,18 +1605,17 @@ function computeTime(order, gl, games, byGame) {
       }
     });
     // по гравцях: найшвидший дубль / хет-трик / покер / пента-трик
-    var byP = {};
-    goals.forEach(function (x) { if (x.playerId && !x.ownGoal) (byP[x.playerId] = byP[x.playerId] || []).push(x.ts); });
-    Object.keys(byP).forEach(function (pid) {
-      var ts = byP[pid];
-      for (var N = 2; N <= 5; N++) for (var i = 0; i + N - 1 < ts.length; i++) {
-        var span = ts[i + N - 1] - ts[i];
-        if (better(T.pser[N], span, true)) T.pser[N] = { v: span, pid: pid, m: m };
-      }
-    });
+    goals.forEach(function (x) { if (x.playerId && !x.ownGoal) { var kk = m.gameId + '|' + x.playerId; (byPD[kk] = byPD[kk] || []).push({ ts: x.ts, m: m }); } });
     // швидка перемога: матч у ротації, виграний за лімітом голів
     if (r.w && m.endReason === 'limit' && m.startedAt && m.endedAt && gameTeamIds(m.gameId).length >= 3) {
       var dur = m.endedAt - m.startedAt - (m.pausedTotal || 0); if (dur > 0) T.fw.push({ m: m, w: r.w, dur: dur });
+    }
+  });
+  Object.keys(byPD).forEach(function (kk) {      // v0.44: серії гравця — в межах ігрового дня
+    var pid = kk.split('|')[1], arr = byPD[kk].sort(function (a, b) { return a.ts - b.ts; });
+    for (var N = 2; N <= 5; N++) for (var i = 0; i + N - 1 < arr.length; i++) {
+      var span = arr[i + N - 1].ts - arr[i].ts;
+      if (better(T.pser[N], span, true)) T.pser[N] = { v: span, pid: pid, m: arr[i + N - 1].m };
     }
   });
   T.fg.sort(function (a, b) { return a.off - b.off; });
@@ -1658,14 +1658,14 @@ function viewTime(D, S) {
     var x = T.pser[w[0]];
     pr += plain(x ? w[1] + ': <b>' + fmtDur(x.v, true) + '</b> — ' + esc(playerName(x.pid)) + ' <span class="sub">(' + mline(x.m) + ', ' + dateOfMatch(x.m) + ')</span>' : w[1] + ': —');
   });
-  h += card('🎩 Найшвидші серії гравця', pr, 'Найменший час між першим і останнім голом гравця в одному матчі.');
+  h += card('🎩 Найшвидші серії гравця', pr, 'Найменший час між першим і останнім голом гравця за ігровий день (у дужках — матч, де забито останній гол серії).');
   h += card('🏁 Найшвидші перемоги', list(T.fw.slice(0, 5), function (r) {
     return '<b>' + fmtDur(r.dur, true) + '</b> — ' + mline(r.m) + ' <span class="sub">(переможець ' + esc(teamName(r.w)) + ', ' + dateOfMatch(r.m) + ')</span>';
   }), 'Матчі з ротацією команд (3–4 команди), виграні за лімітом голів. Чистий ігровий час, без пауз.');
   return h;
 }
 var MULTI_NAMES = { 3: '🎩 Хет-трик · 3 голи', 4: '🃏 Покер · 4 голи', 5: '🖐 Пента-трик · 5 голів', 6: '6 голів', 7: '7 голів', 8: '8 голів', 9: '9 голів', 10: '10 і більше голів' };
-/** Хет-трики та більше: скільки разів гравець забив рівно N голів в одному матчі (3…9, 10 — це 10 і більше). */
+/** Хет-трики та більше: скільки разів гравець забив рівно N голів за ігровий день (3…9, 10 — це 10 і більше). */
 function multiCard(I, card, list) {
   var body = '', any = false;
   for (var n = 3; n <= 10; n++) {
@@ -1674,7 +1674,7 @@ function multiCard(I, card, list) {
     var total = rows.reduce(function (x, r) { return x + r.n; }, 0);
     body += '<div class="sub" style="margin-top:8px"><b>' + MULTI_NAMES[n] + '</b> — разів: ' + total + '</div>' + rows.slice(0, 6).map(function (r, i) { return '<div class="li"><span class="mn">' + (i + 1) + '</span><span class="grow">' + esc(playerName(r.id)) + '</span><b>' + r.n + '</b></div>'; }).join('');
   }
-  return card('🎩 Хет-трики та більше', any ? body : '<div class="mut">Поки що немає матчів, де гравець забив 3 і більше голів.</div>', 'Рахується окремо кожна категорія: у матчі, де гравець забив 4 голи, це покер (а не хет-трик).');
+  return card('🎩 Хет-трики та більше', any ? body : '<div class="mut">Поки що немає ігрових днів, де гравець забив 3 і більше голів.</div>', 'Усі голи гравця за ігровий день (усі матчі разом). Рахується окремо кожна категорія: день з 4 голами — це покер (а не хет-трик).');
 }
 function viewInsights(D, S, minSel) {
   var I = D.ins, mn = S.minM, dateOfGame = function (gid) { var g = byId('Games', gid); return g ? fmtDate(g.date) : ''; };
@@ -1688,7 +1688,6 @@ function viewInsights(D, S, minSel) {
   var rec = I.rec, rl = '';
   if (rec.topMatch) rl += plain('Найрезультативніший матч: ' + mline(rec.topMatch.m) + ' — ' + rec.topMatch.tot + ' гол. (' + dateOfMatch(rec.topMatch.m) + ')');
   if (rec.bigWin) rl += plain('Найбільша перемога: ' + mline(rec.bigWin.m) + ' (+' + rec.bigWin.diff + ', ' + dateOfMatch(rec.bigWin.m) + ')');
-  if (rec.pMatch) { var pm = byId('Matches', rec.pMatch.mid); rl += plain('Найбільше голів гравця в матчі: <b>' + esc(playerName(rec.pMatch.pid)) + '</b> — ' + rec.pMatch.n + (pm ? ' (' + dateOfMatch(pm) + ')' : '')); }
   if (rec.pDay) rl += plain('Найбільше голів гравця за день: <b>' + esc(playerName(rec.pDay.pid)) + '</b> — ' + rec.pDay.n + ' (' + dateOfGame(rec.pDay.gid) + ')');
   if (rec.mostM) rl += plain('Найбільше матчів за день: ' + rec.mostM.n + ' (' + fmtDate(rec.mostM.g.date) + ')');
   var bs = D.players.slice().sort(function (a, b) { return b.best - a.best; })[0], bg = D.players.slice().sort(function (a, b) { return b.gbest - a.gbest; })[0];
@@ -1907,6 +1906,7 @@ function computePlayer(pid, period) {
   Object.keys(gl).forEach(function (k) { gl[k].sort(function (a, b) { return a.ts - b.ts; }); });
   DB.MatchPlayers.forEach(function (x) { if (!mm[x.matchId]) return; var o = mp[x.matchId] || (mp[x.matchId] = {}); (o[x.teamId] = o[x.teamId] || []).push(x.playerId); });
   var P = { id: pid, days: {}, m: 0, w: 0, d: 0, l: 0, goals: 0, best: 0, multi: { 3: 0, 4: 0, 5: 0, 6: 0 }, fast: null, fastHat: null, ast: 0, attN: 0, attDen: 0, cur: 0, bestStreak: 0, byTeam: {}, partners: {}, byDay: {}, dayBest: 0 };
+  var dayTs = {};
   order.forEach(function (m) {
     var o = mp[m.id] || {}, T = null, g = pset[m.gameId];
     if ((o[m.teamAId] || []).indexOf(pid) >= 0) T = m.teamAId; else if ((o[m.teamBId] || []).indexOf(pid) >= 0) T = m.teamBId;
@@ -1922,16 +1922,16 @@ function computePlayer(pid, period) {
     }
     var n = goals.length;
     if (n) {
-      P.goals += n; day.goals += n; if (n > P.best) P.best = n;
-      if (n >= 3) P.multi[Math.min(n, 6)]++;
+      P.goals += n; day.goals += n;
       goals.forEach(function (x) { var b2 = P.byTeam[x.teamId] || (P.byTeam[x.teamId] = { m: 0, w: 0, goals: 0 }); b2.goals++; });
       if (!g.retro && m.startedAt) {
         var off = goals[0].ts - m.startedAt;
         if (off >= 0 && off < 3600000 && (P.fast === null || off < P.fast)) P.fast = off;
-        for (var i = 0; i + 2 < n; i++) { var span = goals[i + 2].ts - goals[i].ts; if (span >= 0 && (P.fastHat === null || span < P.fastHat)) P.fastHat = span; }
+        goals.forEach(function (x) { (dayTs[m.gameId] = dayTs[m.gameId] || []).push(x.ts); });
       }
     }
   });
+  Object.keys(dayTs).forEach(function (gid) { var ts = dayTs[gid].sort(function (a, b) { return a - b; }); for (var i = 0; i + 2 < ts.length; i++) { var span = ts[i + 2] - ts[i]; if (span >= 0 && (P.fastHat === null || span < P.fastHat)) P.fastHat = span; } });      // v0.44: 3 голи поспіль за ігровий день
   P.nDays = Object.keys(P.days).length;
   DB.Goals.forEach(function (x) { if (x.assistId === pid && pset[x.gameId] && !x.ownGoal) P.ast++; });
   var mine = {};
@@ -1948,6 +1948,7 @@ function computePlayer(pid, period) {
   var am = {}; DB.Matches.forEach(function (m) { var g = all[m.gameId]; if (g && !g.retro && m.status === 'finished' && m.startedAt) am[m.id] = m; });
   var cf = null; DB.Goals.forEach(function (x) { var m = am[x.matchId]; if (!m || x.ownGoal || !x.playerId) return; var off = x.ts - m.startedAt; if (off >= 0 && off < 3600000 && (!cf || off < cf.off)) cf = { off: off, pid: x.playerId }; });
   P.clubFastest = !!(cf && cf.pid === pid);
+  Object.keys(P.byDay).forEach(function (k) { var n = P.byDay[k].goals; if (n > P.best) P.best = n; if (n >= 3) P.multi[Math.min(n, 6)]++; });      // v0.44: за ігровий день
   P.nMulti = P.multi[3] + P.multi[4] + P.multi[5] + P.multi[6];
   return P;
 }
@@ -1988,9 +1989,9 @@ function viewPlayer() {
     h += '<div class="card"><h4>📈 Форма: останні ' + P.form.length + ' ігрових днів</h4><div class="fbars">' + P.form.map(function (x) { return '<div class="b"><em>' + x.goals + '</em><i style="height:' + Math.max(4, Math.round(x.goals / mx * 70)) + 'px"></i></div>'; }).join('') + '</div><div class="fres">' +
       P.form.map(function (x) { return '<span class="' + x.res + '">' + ({ W: 'П', D: 'Н', L: 'Пр' })[x.res] + '</span>'; }).join('') + '</div><div class="hint">Стовпчик — голи гравця за день, нижче — підсумок його матчів того дня (П — переважали перемоги, Н — порівну, Пр — переважали поразки).</div></div>';
   }
-  h += '<div class="card"><h4>🏆 Особисті рекорди</h4><div class="rec"><div><b>' + P.best + '</b><span>голів за один матч</span></div><div><b>' + fmtFast(P.fast) + '</b><span>найшвидший гол матчу</span></div><div><b>' + fmtFast(P.fastHat) + '</b><span>найшвидший хет-трик</span></div><div><b>' + P.bestStreak + '</b><span>перемог поспіль</span></div></div>' +
+  h += '<div class="card"><h4>🏆 Особисті рекорди</h4><div class="rec"><div><b>' + P.best + '</b><span>голів за один день</span></div><div><b>' + fmtFast(P.fast) + '</b><span>найшвидший гол матчу</span></div><div><b>' + fmtFast(P.fastHat) + '</b><span>найшвидший хет-трик</span></div><div><b>' + P.bestStreak + '</b><span>перемог поспіль</span></div></div>' +
     '<div class="hint">Час голів рахується лише для ігор, що велись у застосунку з таймером (не для внесених заднім числом).</div></div>';
-  h += '<div class="card"><h4>🎩 Багато голів за матч</h4>' + [['3', 'Хет-трик (3)'], ['4', 'Покер (4)'], ['5', 'Пента-трик (5)'], ['6', '6 і більше']].map(function (n) { return '<div class="li"><span class="grow">' + n[1] + '</span><b>' + P.multi[n[0]] + '</b></div>'; }).join('') + '</div>';
+  h += '<div class="card"><h4>🎩 Багато голів за день</h4>' + [['3', 'Хет-трик (3)'], ['4', 'Покер (4)'], ['5', 'Пента-трик (5)'], ['6', '6 і більше']].map(function (n) { return '<div class="li"><span class="grow">' + n[1] + '</span><b>' + P.multi[n[0]] + '</b></div>'; }).join('') + '<div class="hint">Усі голи гравця за ігровий день (усі матчі разом).</div></div>';
   var pbar = function (arr, bad) {
     return arr.length ? arr.map(function (x) { var q = pct(x.w, x.m); return '<div class="li" style="display:block"><div class="row sp"><span>' + esc(playerName(x.id)) + ' <span class="sub">' + x.m + ' матч. разом</span></span><b>' + q + '%</b></div><div class="pbar' + (bad ? ' bad' : '') + '"><i style="width:' + q + '%"></i></div></div>'; }).join('') : '<div class="mut">Недостатньо спільних матчів.</div>';
   };
@@ -2003,7 +2004,7 @@ function viewPlayer() {
 }
 function playerText(P, name, per) {
   var L = ['⚽ ' + name + ' — ' + pcPeriodLabel(per), 'Ігрових днів: ' + P.nDays + ' · матчів: ' + P.m, 'Голів: ' + P.goals + ' (' + f2(P.m ? P.goals / P.m : 0) + ' за матч)', 'Перемоги: ' + P.w + ' (' + pct(P.w, P.m) + '%) · нічиї: ' + P.d + ' · поразки: ' + P.l];
-  L.push('Рекорд: ' + P.best + ' гол. за матч' + (P.nMulti ? ' · хет-триків і більше: ' + P.nMulti : '') + ' · серія перемог: ' + P.bestStreak);
+  L.push('Рекорд: ' + P.best + ' гол. за день' + (P.nMulti ? ' · хет-триків і більше: ' + P.nMulti : '') + ' · серія перемог: ' + P.bestStreak);
   if (P.best3[0]) L.push('Найкращий партнер: ' + playerName(P.best3[0].id) + ' (' + pct(P.best3[0].w, P.best3[0].m) + '%)');
   L.push('— ' + (SET.name || SETDEF.name));
   return L.join('\n');
